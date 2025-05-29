@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useEffect, useState, useCallback } from 'react'
+import { useTranslation, Trans } from 'react-i18next'
 import Image from 'next/image'
 
 import homeStore from '@/features/stores/home'
@@ -7,6 +7,8 @@ import menuStore from '@/features/stores/menu'
 import settingsStore, { SettingsState } from '@/features/stores/settings'
 import toastStore from '@/features/stores/toast'
 import { TextButton } from '../textButton'
+import { IconButton } from '../iconButton'
+import { live2dStorage, validateCubismCoreFile } from '@/lib/indexedDB'
 
 // Character型の定義
 type Character = Pick<
@@ -339,6 +341,289 @@ const Live2DSettingsForm = () => {
   )
 }
 
+interface StoredFileInfo {
+  fileName: string
+  fileSize: number
+  uploadDate: Date
+}
+
+// Live2D Cubism Core管理コンポーネント
+const Live2DCubismCoreManager = () => {
+  const { t } = useTranslation()
+  const [storedFile, setStoredFile] = useState<StoredFileInfo | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string>('')
+  const [uploadSuccess, setUploadSuccess] = useState(false)
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  // Live2D表示状態を管理
+  const setLive2dVisible = homeStore((s) => s.setLive2dVisible)
+
+  useEffect(() => {
+    const loadStoredFile = async () => {
+      try {
+        setIsLoading(true)
+        const coreFile = await live2dStorage.getCoreFile()
+        if (coreFile) {
+          setStoredFile({
+            fileName: coreFile.fileName,
+            fileSize: coreFile.fileSize,
+            uploadDate: coreFile.uploadDate,
+          })
+          setLive2dVisible(true)
+        } else {
+          setStoredFile(null)
+          setLive2dVisible(false)
+        }
+      } catch (error) {
+        console.error('Failed to load stored file info:', error)
+        setLive2dVisible(false)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    loadStoredFile()
+  }, [])
+
+  const handleFileUpload = async (file: File) => {
+    setIsUploading(true)
+    setUploadError('')
+    setUploadSuccess(false)
+
+    try {
+      const result = validateCubismCoreFile(file)
+      if (!result.isValid) {
+        setUploadError(result.error || '不明なエラーが発生しました')
+        return
+      }
+
+      await live2dStorage.saveCoreFile(file)
+
+      const coreFile = await live2dStorage.getCoreFile()
+      if (coreFile) {
+        setStoredFile({
+          fileName: coreFile.fileName,
+          fileSize: coreFile.fileSize,
+          uploadDate: coreFile.uploadDate,
+        })
+        setUploadSuccess(true)
+        setLive2dVisible(true)
+        setTimeout(() => setUploadSuccess(false), 3000)
+      }
+    } catch (error) {
+      console.error('File upload failed:', error)
+      setUploadError('ファイルのアップロードに失敗しました')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const handleFileDelete = async () => {
+    try {
+      await live2dStorage.deleteCoreFile()
+      setStoredFile(null)
+      setLive2dVisible(false)
+    } catch (error) {
+      console.error('Failed to delete file:', error)
+    }
+  }
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) {
+      handleFileUpload(files[0])
+    }
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+  }, [])
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) {
+      handleFileUpload(files[0])
+    }
+  }
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
+
+  const formatDate = (date: Date): string => {
+    return new Intl.DateTimeFormat('ja-JP', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date)
+  }
+
+  if (isLoading) {
+    return (
+      <div className="mt-6 space-y-4">
+        <div className="text-xl font-bold">{t('Live2D.Title')}</div>
+        <div className="flex items-center justify-center py-8">
+          <div className="text-gray-500">{t('Live2D.Loading')}</div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-6 space-y-4">
+      <div className="text-xl font-bold">{t('Live2D.Title')}</div>
+      <div className="mb-6 text-base whitespace-pre-line">
+        {t('Live2D.Description')}
+      </div>
+
+      {/* アップロード状態の表示 */}
+      {uploadError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
+          ⚠️ {uploadError}
+        </div>
+      )}
+
+      {uploadSuccess && (
+        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
+          ✅ {t('Live2D.UploadSuccess')}
+        </div>
+      )}
+
+      {/* 現在のファイル情報 */}
+      {storedFile && (
+        <div className="border rounded-lg p-4 bg-green-50 border-green-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="text-green-600 text-2xl">📄</div>
+              <div>
+                <p className="font-medium text-green-800">
+                  {storedFile.fileName}
+                </p>
+                <p className="text-sm text-green-600">
+                  {formatFileSize(storedFile.fileSize)} •{' '}
+                  {formatDate(storedFile.uploadDate)}
+                </p>
+              </div>
+            </div>
+            <IconButton
+              iconName="24/Close"
+              isProcessing={false}
+              onClick={handleFileDelete}
+              backgroundColor="bg-red-100 hover:bg-red-200"
+              iconColor="text-red-600"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ファイルアップロード領域 */}
+      <div className="space-y-2">
+        <div className="text-base font-bold">
+          {t('Live2D.Settings.FileTitle')}
+        </div>
+        <div
+          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+            isDragOver
+              ? 'border-blue-400 bg-blue-50'
+              : storedFile
+                ? 'border-gray-200 bg-gray-50'
+                : 'border-gray-300 hover:border-gray-400'
+          }`}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          <div className="text-4xl mb-2">📁</div>
+          <p className="text-sm font-medium text-gray-700 mb-1">
+            {storedFile ? t('Live2D.UpdateFile') : t('Live2D.DragAndDrop')}
+          </p>
+          <p className="text-xs text-gray-500 mb-3">
+            {t('Live2D.ClickToSelect')}
+          </p>
+
+          <input
+            type="file"
+            accept=".js"
+            onChange={handleInputChange}
+            className="hidden"
+            id="cubism-core-upload"
+            disabled={isUploading}
+          />
+          <TextButton
+            onClick={() => {
+              const input = document.getElementById(
+                'cubism-core-upload'
+              ) as HTMLInputElement
+              input?.click()
+            }}
+            disabled={isUploading}
+          >
+            {isUploading ? t('Live2D.Processing') : t('Live2D.SelectFile')}
+          </TextButton>
+        </div>
+      </div>
+
+      {/* ファイル要件の説明 */}
+      <div className="text-sm text-gray-600">
+        <p className="font-medium mb-2">{t('Live2D.FileRequirements')}</p>
+        <ul className="list-disc list-inside space-y-1 ml-4 text-xs">
+          <li>{t('Live2D.RequirementFileName')}</li>
+          <li>{t('Live2D.RequirementExtension')}</li>
+          <li>{t('Live2D.RequirementSize')}</li>
+        </ul>
+      </div>
+
+      {/* ダウンロードリンク */}
+      <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+        <p className="text-xs font-medium text-blue-800 mb-1">
+          {t('Live2D.FileSource')}
+        </p>
+        <div className="mb-2 text-xs text-blue-700">
+          <Trans
+            i18nKey="Live2D.DownloadInstructions"
+            components={{
+              downloadLink: (
+                <a
+                  href="https://www.live2d.com/sdk/download/web/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline"
+                />
+              ),
+            }}
+          />
+        </div>
+        <div className="text-xs text-blue-700">
+          <Trans
+            i18nKey="Live2D.ExtractDescription"
+            components={{
+              code: (
+                <code className="bg-gray-100 px-1 rounded mt-1 inline-block" />
+              ),
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const Character = () => {
   const { t } = useTranslation()
   const { characterName, selectedVrmPath, selectedLive2DPath, modelType } =
@@ -349,6 +634,9 @@ const Character = () => {
   >([])
   const selectAIService = settingsStore((s) => s.selectAIService)
   const systemPrompt = settingsStore((s) => s.systemPrompt)
+
+  const setLive2dVisible = homeStore((s) => s.setLive2dVisible)
+
   const characterPresets = [
     {
       key: 'characterPreset1',
@@ -418,6 +706,34 @@ const Character = () => {
       })
   }, [])
 
+  // モデルタイプに応じた初期表示状態の設定
+  useEffect(() => {
+    const initializeLive2DVisibility = async () => {
+      if (modelType === 'live2d') {
+        try {
+          const hasFile = await live2dStorage.hasCoreFile()
+          if (hasFile) {
+            setLive2dVisible(true)
+          } else {
+            // ファイルがない場合はpublicフォルダをチェック
+            const response = await fetch('/scripts/live2dcubismcore.min.js', {
+              method: 'HEAD',
+            })
+            setLive2dVisible(response.ok)
+          }
+        } catch (error) {
+          console.error('Error checking Live2D file availability:', error)
+          setLive2dVisible(false)
+        }
+      } else {
+        // VRMモードの場合はLive2Dを非表示
+        setLive2dVisible(false)
+      }
+    }
+
+    initializeLive2DVisibility()
+  }, [modelType, setLive2dVisible])
+
   const handleVrmUpload = async (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -479,7 +795,11 @@ const Character = () => {
                 ? 'bg-primary text-white'
                 : 'bg-white hover:bg-white-hover'
             }`}
-            onClick={() => settingsStore.setState({ modelType: 'vrm' })}
+            onClick={() => {
+              settingsStore.setState({ modelType: 'vrm' })
+              // VRMモードに切り替え時はLive2Dを非表示
+              setLive2dVisible(false)
+            }}
           >
             VRM
           </button>
@@ -489,7 +809,28 @@ const Character = () => {
                 ? 'bg-primary text-white'
                 : 'bg-white hover:bg-white-hover'
             }`}
-            onClick={() => settingsStore.setState({ modelType: 'live2d' })}
+            onClick={async () => {
+              settingsStore.setState({ modelType: 'live2d' })
+              // Live2Dモードに切り替え時はファイルの存在確認をしてから表示状態を決定
+              try {
+                const hasFile = await live2dStorage.hasCoreFile()
+                if (hasFile) {
+                  setLive2dVisible(true)
+                } else {
+                  // ファイルがない場合はpublicフォルダをチェック
+                  const response = await fetch(
+                    '/scripts/live2dcubismcore.min.js',
+                    {
+                      method: 'HEAD',
+                    }
+                  )
+                  setLive2dVisible(response.ok)
+                }
+              } catch (error) {
+                console.error('Error checking Live2D file availability:', error)
+                setLive2dVisible(false)
+              }
+            }}
           >
             Live2D
           </button>
@@ -553,6 +894,9 @@ const Character = () => {
                 </option>
               ))}
             </select>
+
+            <Live2DCubismCoreManager />
+
             <div className="my-4">
               <Live2DSettingsForm />
             </div>
